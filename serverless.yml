@@ -10,15 +10,35 @@ custom:
   serverless-offline:
     noPrependStageInUrl: true
 
+  # Per-stage configuration
+  settings:
+    staging:
+      memorySize: 256
+      timeout: 10
+      logRetentionDays: 7
+      alarmEmail: ankit.prajapati@mindinventory.com
+    production:
+      memorySize: 512
+      timeout: 15
+      logRetentionDays: 30
+      alarmEmail: ankit.prajapati@mindinventory.com
+
 provider:
   name: aws
   runtime: nodejs22.x
   versionFunctions: true
-  stage: staging
+  stage: ${opt:stage, 'staging'}
   region: ap-south-1
+
+  # Pick memory and timeout based on stage
+  memorySize: ${self:custom.settings.${sls:stage}.memorySize}
+  timeout: ${self:custom.settings.${sls:stage}.timeout}
+
   environment:
     TODOS_TABLE: ${self:service}-todos-${sls:stage}
     API_VERSION: v1
+    STAGE: ${sls:stage}
+
   iam:
     role:
       statements:
@@ -32,6 +52,11 @@ provider:
             - dynamodb:DeleteItem
           Resource:
             - !GetAtt TodosTable.Arn
+
+        - Effect: Allow
+          Action:
+            - cloudwatch:PutMetricData
+          Resource: "*"
 
 functions:
   createTodo:
@@ -81,6 +106,9 @@ functions:
 
 resources:
   Resources:
+
+    # ─── DynamoDB Table ───────────────────────────────────────────────────────
+
     TodosTable:
       Type: AWS::DynamoDB::Table
       Properties:
@@ -96,3 +124,200 @@ resources:
           - AttributeName: todoId
             KeyType: RANGE
         BillingMode: PAY_PER_REQUEST
+
+    # ─── CloudWatch Log Groups ────────────────────────────────────────────────
+    # Explicit log groups so we control retention
+    # Without this, Lambda logs stay forever and cost money
+
+    CreateTodoLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-createTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    GetTodosLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-getTodos
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    GetTodoLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-getTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    UpdateTodoLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-updateTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    DeleteTodoLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-deleteTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    # ─── SNS Topic for Alarm Notifications ───────────────────────────────────
+    # All alarms send to this topic → email
+
+    AlarmNotificationTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:service}-${sls:stage}-alarms
+        Subscription:
+          - Protocol: email
+            Endpoint: ${self:custom.settings.${sls:stage}.alarmEmail}
+
+    # ─── CloudWatch Alarms ────────────────────────────────────────────────────
+
+    # Triggers if any Lambda function errors spike above 3 in 5 minutes
+    LambdaErrorAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${sls:stage}-lambda-errors
+        AlarmDescription: "Lambda error count is too high"
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${sls:stage}-createTodo
+        Statistic: Sum
+        Period: 300        # 5 minutes
+        EvaluationPeriods: 1
+        Threshold: 3
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - !Ref AlarmNotificationTopic
+        OKActions:
+          - !Ref AlarmNotificationTopic
+
+    # Triggers if Lambda duration goes above 5 seconds (staging: 10s timeout, prod: 15s)
+    LambdaDurationAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${sls:stage}-lambda-duration
+        AlarmDescription: "Lambda duration is too high"
+        Namespace: AWS/Lambda
+        MetricName: Duration
+        Dimensions:
+          - Name: FunctionName
+            Value: ${self:service}-${sls:stage}-createTodo
+        Statistic: p95
+        Period: 300        # 5 minutes
+        EvaluationPeriods: 1
+        Threshold: 5000    # 5 seconds in milliseconds
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - !Ref AlarmNotificationTopic
+
+    # Triggers if DynamoDB table gets throttled
+    DynamoDBThrottleAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: ${self:service}-${sls:stage}-dynamodb-throttles
+        AlarmDescription: "DynamoDB is being throttled"
+        Namespace: AWS/DynamoDB
+        MetricName: SystemErrors
+        Dimensions:
+          - Name: TableName
+            Value: ${self:provider.environment.TODOS_TABLE}
+        Statistic: Sum
+        Period: 300        # 5 minutes
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - !Ref AlarmNotificationTopic
+
+    # ─── CloudWatch Dashboard ─────────────────────────────────────────────────
+    # Single dashboard showing all key metrics for this stage
+
+    TodoAppDashboard:
+      Type: AWS::CloudWatch::Dashboard
+      Properties:
+        DashboardName: ${self:service}-${sls:stage}
+        DashboardBody: !Sub |
+          {
+            "widgets": [
+              {
+                "type": "text",
+                "x": 0, "y": 0, "width": 24, "height": 1,
+                "properties": {
+                  "markdown": "# ${self:service} — ${sls:stage} environment"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0, "y": 1, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Lambda Invocations",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-deleteTodo"]
+                  ],
+                  "period": 300,
+                  "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 12, "y": 1, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Lambda Errors",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-deleteTodo"]
+                  ],
+                  "period": 300,
+                  "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0, "y": 7, "width": 12, "height": 6,
+                "properties": {
+                  "title": "Lambda Duration (p95)",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-deleteTodo"]
+                  ],
+                  "period": 300,
+                  "stat": "p95",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 12, "y": 7, "width": 12, "height": 6,
+                "properties": {
+                  "title": "DynamoDB Throttles",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/DynamoDB", "SystemErrors", "TableName", "${self:service}-todos-${sls:stage}"]
+                  ],
+                  "period": 300,
+                  "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              }
+            ]
+          }
