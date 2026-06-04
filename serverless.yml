@@ -1,0 +1,91 @@
+service: serverless-todo-app
+
+org: learning001
+app: serverless-todo
+
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    noPrependStageInUrl: true
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  stage: staging            # ← overrides the default "dev"
+  region: ap-south-1
+  environment:
+    TODOS_TABLE: ${self:service}-todos-${sls:stage}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - !GetAtt TodosTable.Arn
+
+functions:
+  createTodo:
+    handler: src/handlers/createTodo.handler
+    events:
+      - http:
+          path: todos
+          method: post
+          cors: true
+
+  getTodos:
+    handler: src/handlers/getTodos.handler
+    events:
+      - http:
+          path: todos
+          method: get
+          cors: true
+
+  getTodo:
+    handler: src/handlers/getTodos.handler
+    events:
+      - http:
+          path: todos/{id}
+          method: get
+          cors: true
+
+  updateTodo:
+    handler: src/handlers/updateTodo.handler
+    events:
+      - http:
+          path: todos/{id}
+          method: put
+          cors: true
+
+  deleteTodo:
+    handler: src/handlers/deleteTodo.handler
+    events:
+      - http:
+          path: todos/{id}
+          method: delete
+          cors: true
+
+resources:
+  Resources:
+    TodosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TODOS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: todoId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: todoId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
