@@ -13,10 +13,12 @@ custom:
 provider:
   name: aws
   runtime: nodejs22.x
-  stage: staging            # ← overrides the default "dev"
+  versionFunctions: true
+  stage: staging
   region: ap-south-1
   environment:
     TODOS_TABLE: ${self:service}-todos-${sls:stage}
+    API_VERSION: v1
   iam:
     role:
       statements:
@@ -33,42 +35,47 @@ provider:
 
 functions:
   createTodo:
-    handler: src/handlers/createTodo.handler
+    handler: src/handlers/v1/createTodo.handler
+    description: "v1 - Create a new todo"
     events:
       - http:
-          path: todos
+          path: v1/todos
           method: post
           cors: true
 
   getTodos:
-    handler: src/handlers/getTodos.handler
+    handler: src/handlers/v1/getTodos.handler
+    description: "v1 - Get all todos"
     events:
       - http:
-          path: todos
+          path: v1/todos
           method: get
           cors: true
 
   getTodo:
-    handler: src/handlers/getTodos.handler
+    handler: src/handlers/v1/getTodos.handler
+    description: "v1 - Get single todo"
     events:
       - http:
-          path: todos/{id}
+          path: v1/todos/{id}
           method: get
           cors: true
 
   updateTodo:
-    handler: src/handlers/updateTodo.handler
+    handler: src/handlers/v1/updateTodo.handler
+    description: "v1 - Update a todo"
     events:
       - http:
-          path: todos/{id}
+          path: v1/todos/{id}
           method: put
           cors: true
 
   deleteTodo:
-    handler: src/handlers/deleteTodo.handler
+    handler: src/handlers/v1/deleteTodo.handler
+    description: "v1 - Delete a todo"
     events:
       - http:
-          path: todos/{id}
+          path: v1/todos/{id}
           method: delete
           cors: true
 

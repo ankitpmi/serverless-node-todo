@@ -1,8 +1,8 @@
 // const { v4: uuidv4 } = require('uuid');
 const uuid = require('uuid');
 
-const dynamoDB = require('../utils/dynamodb');
-const response = require('../utils/response');
+const dynamoDB = require('../../utils/dynamodb');
+const response = require('../../utils/response');
 
 
 

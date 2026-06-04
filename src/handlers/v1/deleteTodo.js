@@ -1,5 +1,5 @@
-const dynamoDB = require('../utils/dynamodb');
-const response = require('../utils/response');
+const dynamoDB = require('../../utils/dynamodb');
+const response = require('../../utils/response');
 
 module.exports.handler = async (event) => {
   // const userId = event.requestContext?.identity?.cognitoIdentityId || 'user-default';
