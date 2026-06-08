@@ -30,7 +30,6 @@ provider:
   stage: ${opt:stage, 'staging'}
   region: ap-south-1
 
-  # Pick memory and timeout based on stage
   memorySize: ${self:custom.settings.${sls:stage}.memorySize}
   timeout: ${self:custom.settings.${sls:stage}.timeout}
 
@@ -50,6 +49,7 @@ provider:
             - dynamodb:PutItem
             - dynamodb:UpdateItem
             - dynamodb:DeleteItem
+            - dynamodb:BatchWriteItem        # ← required for batch create
           Resource:
             - !GetAtt TodosTable.Arn
 
@@ -65,6 +65,15 @@ functions:
     events:
       - http:
           path: v1/todos
+          method: post
+          cors: true
+
+  createTodos:
+    handler: src/handlers/v1/createTodos.handler
+    description: "v1 - Batch create multiple todos (max 25)"
+    events:
+      - http:
+          path: v1/todos/batch
           method: post
           cors: true
 
@@ -106,7 +115,6 @@ functions:
 
 resources:
   Resources:
-
     # ─── DynamoDB Table ───────────────────────────────────────────────────────
 
     TodosTable:
@@ -126,13 +134,17 @@ resources:
         BillingMode: PAY_PER_REQUEST
 
     # ─── CloudWatch Log Groups ────────────────────────────────────────────────
-    # Explicit log groups so we control retention
-    # Without this, Lambda logs stay forever and cost money
 
     CreateTodoLogGroup:
       Type: AWS::Logs::LogGroup
       Properties:
         LogGroupName: /aws/lambda/${self:service}-${sls:stage}-createTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    CreateTodosLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-createTodos
         RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
 
     GetTodosLogGroup:
@@ -160,7 +172,6 @@ resources:
         RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
 
     # ─── SNS Topic for Alarm Notifications ───────────────────────────────────
-    # All alarms send to this topic → email
 
     AlarmNotificationTopic:
       Type: AWS::SNS::Topic
@@ -172,7 +183,6 @@ resources:
 
     # ─── CloudWatch Alarms ────────────────────────────────────────────────────
 
-    # Triggers if any Lambda function errors spike above 3 in 5 minutes
     LambdaErrorAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -183,8 +193,8 @@ resources:
         Dimensions:
           - Name: FunctionName
             Value: ${self:service}-${sls:stage}-createTodo
-        Statistic: Sum
-        Period: 300        # 5 minutes
+        Statistic: Average
+        Period: 300
         EvaluationPeriods: 1
         Threshold: 3
         ComparisonOperator: GreaterThanOrEqualToThreshold
@@ -194,7 +204,6 @@ resources:
         OKActions:
           - !Ref AlarmNotificationTopic
 
-    # Triggers if Lambda duration goes above 5 seconds (staging: 10s timeout, prod: 15s)
     LambdaDurationAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -205,16 +214,15 @@ resources:
         Dimensions:
           - Name: FunctionName
             Value: ${self:service}-${sls:stage}-createTodo
-        Statistic: p95
-        Period: 300        # 5 minutes
+        ExtendedStatistic: p95
+        Period: 300
         EvaluationPeriods: 1
-        Threshold: 5000    # 5 seconds in milliseconds
+        Threshold: 5000
         ComparisonOperator: GreaterThanOrEqualToThreshold
         TreatMissingData: notBreaching
         AlarmActions:
           - !Ref AlarmNotificationTopic
 
-    # Triggers if DynamoDB table gets throttled
     DynamoDBThrottleAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -226,7 +234,7 @@ resources:
           - Name: TableName
             Value: ${self:provider.environment.TODOS_TABLE}
         Statistic: Sum
-        Period: 300        # 5 minutes
+        Period: 300
         EvaluationPeriods: 1
         Threshold: 1
         ComparisonOperator: GreaterThanOrEqualToThreshold
@@ -235,7 +243,6 @@ resources:
           - !Ref AlarmNotificationTopic
 
     # ─── CloudWatch Dashboard ─────────────────────────────────────────────────
-    # Single dashboard showing all key metrics for this stage
 
     TodoAppDashboard:
       Type: AWS::CloudWatch::Dashboard
@@ -259,6 +266,7 @@ resources:
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodos"],
                     ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
                     ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
                     ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
@@ -277,6 +285,7 @@ resources:
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodos"],
                     ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
                     ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
                     ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
@@ -295,6 +304,7 @@ resources:
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodos"],
                     ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodos"],
                     ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodo"],
                     ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-updateTodo"],
