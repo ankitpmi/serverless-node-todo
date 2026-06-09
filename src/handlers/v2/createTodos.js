@@ -31,6 +31,8 @@ module.exports.handler = async (event) => {
     title,
     description: description || '',
     completed: false,
+    environment: process.env.ENVIRONMENT || 'staging',
+    isSeedData: true,
     createdAt: timestamp,
     updatedAt: timestamp,
   }));
