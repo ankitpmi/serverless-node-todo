@@ -59,6 +59,9 @@ provider:
           Resource: "*"
 
 functions:
+
+  # ─── API v1 ───────────────────────────────────────────────────────────────
+
   createTodo:
     handler: src/handlers/v1/createTodo.handler
     description: "v1 - Create a new todo"
@@ -113,6 +116,62 @@ functions:
           method: delete
           cors: true
 
+  # ─── API v2 ───────────────────────────────────────────────────────────────
+
+  createTodoV2:
+    handler: src/handlers/v2/createTodo.handler
+    description: "v2 - Create a new todo (includes environment, isSeedData)"
+    events:
+      - http:
+          path: v2/todos
+          method: post
+          cors: true
+
+  createTodosV2:
+    handler: src/handlers/v2/createTodos.handler
+    description: "v2 - Batch create multiple todos (includes environment, isSeedData)"
+    events:
+      - http:
+          path: v2/todos/batch
+          method: post
+          cors: true
+
+  getTodosV2:
+    handler: src/handlers/v2/getTodos.handler
+    description: "v2 - Get all todos (includes environment, isSeedData)"
+    events:
+      - http:
+          path: v2/todos
+          method: get
+          cors: true
+
+  getTodoV2:
+    handler: src/handlers/v2/getTodos.handler
+    description: "v2 - Get single todo (includes environment, isSeedData)"
+    events:
+      - http:
+          path: v2/todos/{id}
+          method: get
+          cors: true
+
+  updateTodoV2:
+    handler: src/handlers/v2/updateTodo.handler
+    description: "v2 - Update a todo (supports isSeedData update)"
+    events:
+      - http:
+          path: v2/todos/{id}
+          method: put
+          cors: true
+
+  deleteTodoV2:
+    handler: src/handlers/v2/deleteTodo.handler
+    description: "v2 - Delete a todo"
+    events:
+      - http:
+          path: v2/todos/{id}
+          method: delete
+          cors: true
+
 resources:
   Resources:
     # ─── DynamoDB Table ───────────────────────────────────────────────────────
@@ -133,7 +192,7 @@ resources:
             KeyType: RANGE
         BillingMode: PAY_PER_REQUEST
 
-    # ─── CloudWatch Log Groups ────────────────────────────────────────────────
+    # ─── CloudWatch Log Groups (v1) ───────────────────────────────────────────
 
     CreateTodoLogGroup:
       Type: AWS::Logs::LogGroup
@@ -169,6 +228,44 @@ resources:
       Type: AWS::Logs::LogGroup
       Properties:
         LogGroupName: /aws/lambda/${self:service}-${sls:stage}-deleteTodo
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    # ─── CloudWatch Log Groups (v2) ───────────────────────────────────────────
+
+    CreateTodoV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-createTodoV2
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    CreateTodosV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-createTodosV2
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    GetTodosV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-getTodosV2
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    GetTodoV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-getTodoV2
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    UpdateTodoV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-updateTodoV2
+        RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
+
+    DeleteTodoV2LogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${sls:stage}-deleteTodoV2
         RetentionInDays: ${self:custom.settings.${sls:stage}.logRetentionDays}
 
     # ─── SNS Topic for Alarm Notifications ───────────────────────────────────
@@ -259,10 +356,17 @@ resources:
                 }
               },
               {
-                "type": "metric",
-                "x": 0, "y": 1, "width": 12, "height": 6,
+                "type": "text",
+                "x": 0, "y": 1, "width": 24, "height": 1,
                 "properties": {
-                  "title": "Lambda Invocations",
+                  "markdown": "## API v1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0, "y": 2, "width": 12, "height": 6,
+                "properties": {
+                  "title": "v1 — Lambda Invocations",
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
@@ -279,9 +383,9 @@ resources:
               },
               {
                 "type": "metric",
-                "x": 12, "y": 1, "width": 12, "height": 6,
+                "x": 12, "y": 2, "width": 12, "height": 6,
                 "properties": {
-                  "title": "Lambda Errors",
+                  "title": "v1 — Lambda Errors",
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
@@ -298,9 +402,9 @@ resources:
               },
               {
                 "type": "metric",
-                "x": 0, "y": 7, "width": 12, "height": 6,
+                "x": 0, "y": 8, "width": 12, "height": 6,
                 "properties": {
-                  "title": "Lambda Duration (p95)",
+                  "title": "v1 — Lambda Duration (p95)",
                   "view": "timeSeries",
                   "metrics": [
                     ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodo"],
@@ -317,7 +421,7 @@ resources:
               },
               {
                 "type": "metric",
-                "x": 12, "y": 7, "width": 12, "height": 6,
+                "x": 12, "y": 8, "width": 12, "height": 6,
                 "properties": {
                   "title": "DynamoDB Throttles",
                   "view": "timeSeries",
@@ -326,6 +430,70 @@ resources:
                   ],
                   "period": 300,
                   "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "text",
+                "x": 0, "y": 14, "width": 24, "height": 1,
+                "properties": {
+                  "markdown": "## API v2"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0, "y": 15, "width": 12, "height": 6,
+                "properties": {
+                  "title": "v2 — Lambda Invocations",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodoV2"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-createTodosV2"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodosV2"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-getTodoV2"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-updateTodoV2"],
+                    ["AWS/Lambda", "Invocations", "FunctionName", "${self:service}-${sls:stage}-deleteTodoV2"]
+                  ],
+                  "period": 300,
+                  "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 12, "y": 15, "width": 12, "height": 6,
+                "properties": {
+                  "title": "v2 — Lambda Errors",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodoV2"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-createTodosV2"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodosV2"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-getTodoV2"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-updateTodoV2"],
+                    ["AWS/Lambda", "Errors", "FunctionName", "${self:service}-${sls:stage}-deleteTodoV2"]
+                  ],
+                  "period": 300,
+                  "stat": "Sum",
+                  "region": "ap-south-1"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0, "y": 21, "width": 12, "height": 6,
+                "properties": {
+                  "title": "v2 — Lambda Duration (p95)",
+                  "view": "timeSeries",
+                  "metrics": [
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodoV2"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-createTodosV2"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodosV2"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-getTodoV2"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-updateTodoV2"],
+                    ["AWS/Lambda", "Duration", "FunctionName", "${self:service}-${sls:stage}-deleteTodoV2"]
+                  ],
+                  "period": 300,
+                  "stat": "p95",
                   "region": "ap-south-1"
                 }
               }
