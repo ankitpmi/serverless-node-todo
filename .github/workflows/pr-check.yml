@@ -1,0 +1,30 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches:
+      - staging
+      - main
+
+jobs:
+  check:
+    name: Install & Lint Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Placeholder for tests — will run when Phase: Automated Testing is added
+      - name: Run tests
+        run: npm test
+        continue-on-error: true
