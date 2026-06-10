@@ -5,12 +5,40 @@ on:
     branches:
       - main
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BLUE-GREEN (CANARY) DEPLOYMENT — PRODUCTION
+#
+# ⚠️  PHASE 2: This workflow mirrors the staging Blue-Green strategy.
+#     Activate after Blue-Green is confirmed stable in staging.
+#
+# Strategy:
+#   1. Deploy new Lambda version (Green) alongside existing (Blue)
+#   2. Shift 10% traffic → Green via alias routing-config
+#   3. Wait 10 min (longer window for production caution)
+#   4a. HEALTHY  → shift 100% to Green, retire Blue weight
+#   4b. UNHEALTHY → rollback alias to 100% Blue, fail the workflow
+#
+# Rollback triggers:
+#   • CloudWatch alarm breach  (checked via check-canary-health.sh)
+#   • Error rate spike         (same script)
+#   • Manual trigger           (use rollback.yml workflow)
+# ─────────────────────────────────────────────────────────────────────────────
+
+env:
+  STAGE: production
+  REGION: ap-south-1
+  STACK_NAME: serverless-todo-app-production
+  CANARY_WEIGHT: 0.1         # 10% traffic to Green during canary window
+  CANARY_WAIT_SECONDS: 600   # 10 minutes — longer window for production
+
 jobs:
   deploy:
-    name: Deploy to Production
+    name: Blue-Green Deploy to Production
     runs-on: ubuntu-latest
 
     steps:
+      # ── Setup ───────────────────────────────────────────────────────────────
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -23,68 +51,164 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Placeholder for tests — will run when Phase: Automated Testing is added
       - name: Run tests
         run: npm test
         continue-on-error: true
+
+      - name: Make scripts executable
+        run: chmod +x scripts/check-canary-health.sh
+
+      # ── Deploy (publish new Green version) ─────────────────────────────────
 
       - name: Install Serverless Framework
         run: npm install -g serverless
 
       - name: Deploy to Production
-        run: serverless deploy --stage production --verbose
+        run: serverless deploy --stage ${{ env.STAGE }} --verbose
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
 
-      - name: Update Lambda Aliases
+      # ── Blue-Green Canary Shift ─────────────────────────────────────────────
+
+      - name: Start Canary — shift 10% traffic to Green
+        id: canary_start
         run: |
-          # Fetch all Lambda function names from the deployed CloudFormation stack
-          # This way function names are always dynamic — no hardcoding needed
           FUNCTIONS=$(aws cloudformation list-stack-resources \
-            --stack-name serverless-todo-app-production \
+            --stack-name ${{ env.STACK_NAME }} \
             --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" \
             --output text)
 
-          for FUNCTION in $FUNCTIONS
-          do
-            # Get the latest published version number
-            VERSION=$(aws lambda list-versions-by-function \
+          echo "Functions found: $FUNCTIONS"
+
+          for FUNCTION in $FUNCTIONS; do
+            GREEN_VERSION=$(aws lambda list-versions-by-function \
               --function-name "$FUNCTION" \
               --query 'Versions[-1].Version' \
               --output text)
 
-            # Check if alias already exists
-            ALIAS_EXISTS=$(aws lambda get-alias \
+            BLUE_VERSION=$(aws lambda get-alias \
               --function-name "$FUNCTION" \
-              --name production \
-              --query 'Name' \
-              --output text 2>/dev/null || echo "NOT_FOUND")
+              --name ${{ env.STAGE }} \
+              --query 'FunctionVersion' \
+              --output text 2>/dev/null || echo "$GREEN_VERSION")
 
-            if [ "$ALIAS_EXISTS" = "NOT_FOUND" ]; then
-              # Create alias if it doesn't exist yet
-              aws lambda create-alias \
-                --function-name "$FUNCTION" \
-                --name production \
-                --function-version "$VERSION"
-              echo "Created alias: $FUNCTION -> production -> Version $VERSION"
-            else
-              # Update alias to point to latest version
+            echo "[$FUNCTION] Blue=$BLUE_VERSION  Green=$GREEN_VERSION"
+
+            if [ "$BLUE_VERSION" = "$GREEN_VERSION" ]; then
+              echo "[$FUNCTION] No version change — skipping canary split"
               aws lambda update-alias \
                 --function-name "$FUNCTION" \
-                --name production \
-                --function-version "$VERSION"
-              echo "Updated alias: $FUNCTION -> production -> Version $VERSION"
+                --name ${{ env.STAGE }} \
+                --function-version "$GREEN_VERSION"
+              continue
             fi
+
+            aws lambda update-alias \
+              --function-name "$FUNCTION" \
+              --name ${{ env.STAGE }} \
+              --function-version "$BLUE_VERSION" \
+              --routing-config AdditionalVersionWeights={"$GREEN_VERSION"=${{ env.CANARY_WEIGHT }}}
+
+            echo "[$FUNCTION] Canary started: 90% Blue(v$BLUE_VERSION) / 10% Green(v$GREEN_VERSION)"
           done
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ap-south-1
+          AWS_DEFAULT_REGION: ${{ env.REGION }}
+
+      # ── Health Check ────────────────────────────────────────────────────────
+
+      - name: Monitor Canary Health
+        id: health_check
+        run: |
+          PRIMARY_FUNCTION="${{ env.STACK_NAME }}-createTodo"
+
+          ./scripts/check-canary-health.sh \
+            ${{ env.STAGE }} \
+            "$PRIMARY_FUNCTION" \
+            ${{ env.CANARY_WAIT_SECONDS }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.REGION }}
+
+      # ── Rollback (runs only if health check failed) ─────────────────────────
+
+      - name: ROLLBACK — restore 100% traffic to Blue
+        if: failure() && steps.canary_start.outcome == 'success'
+        run: |
+          echo "🚨 Rolling back all functions to Blue..."
+
+          FUNCTIONS=$(aws cloudformation list-stack-resources \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" \
+            --output text)
+
+          for FUNCTION in $FUNCTIONS; do
+            BLUE_VERSION=$(aws lambda get-alias \
+              --function-name "$FUNCTION" \
+              --name ${{ env.STAGE }} \
+              --query 'FunctionVersion' \
+              --output text)
+
+            aws lambda update-alias \
+              --function-name "$FUNCTION" \
+              --name ${{ env.STAGE }} \
+              --function-version "$BLUE_VERSION" \
+              --routing-config AdditionalVersionWeights={}
+
+            echo "✅ [$FUNCTION] Rolled back to Blue v$BLUE_VERSION"
+          done
+
+          echo ""
+          echo "🔵 Rollback complete. All traffic restored to Blue."
+          exit 1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.REGION }}
+
+      # ── Full Cutover (runs only if health check passed) ─────────────────────
+
+      - name: CUTOVER — shift 100% traffic to Green
+        if: success()
+        run: |
+          echo "✅ Canary healthy — completing cutover to Green..."
+
+          FUNCTIONS=$(aws cloudformation list-stack-resources \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" \
+            --output text)
+
+          for FUNCTION in $FUNCTIONS; do
+            GREEN_VERSION=$(aws lambda list-versions-by-function \
+              --function-name "$FUNCTION" \
+              --query 'Versions[-1].Version' \
+              --output text)
+
+            aws lambda update-alias \
+              --function-name "$FUNCTION" \
+              --name ${{ env.STAGE }} \
+              --function-version "$GREEN_VERSION" \
+              --routing-config AdditionalVersionWeights={}
+
+            echo "🟢 [$FUNCTION] Cutover complete → v$GREEN_VERSION (100%)"
+          done
+
+          echo ""
+          echo "🟢 Blue-Green deployment complete. Green is now live."
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.REGION }}
+
+      # ── Summary ─────────────────────────────────────────────────────────────
 
       - name: Print deployed URLs
-        run: serverless info --stage production
+        if: success()
+        run: serverless info --stage ${{ env.STAGE }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
